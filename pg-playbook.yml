@@ -1,0 +1,336 @@
+---
+- name: Install and Configure PostgreSQL
+  hosts: all
+  become: yes
+  gather_facts: no
+  ignore_errors: yes
+
+  vars:
+    postgres_user: "{{ user | default('postgres') }}"
+    postgres_password: "{{ password | default('password') }}"
+    postgres_version: "{{ version | default('16') }}"
+    db_name: "{{ dbname | default('mydb') }}"
+    db_user: "{{ dbuser | default('dbuser') }}"
+    db_user_password: "{{ dbpassword | default('dbpassword') }}"
+    db_host: "{{ dbhost | default('localhost') }}"
+    db_port: "{{ dbport | default('5432') }}"
+
+  tasks:
+    - name: Detect Linux Distribution
+      shell: lsb_release -cs
+      register: distribution
+      changed_when: false
+      check_mode: no
+
+    - name: Import PostgreSQL GPG Key (Ubuntu)
+      apt_key:
+        url: "https://www.postgresql.org/media/keys/ACCC4CF8.asc"
+        state: present
+      when: distribution.stdout == 'focal'
+
+    - name: Add PostgreSQL Apt Repository (Ubuntu)
+      apt_repository:
+        repo: 'deb https://apt.postgresql.org/pub/repos/apt {{ distribution.stdout }}-pgdg main'
+        state: present
+      when: distribution.stdout == 'focal'
+
+    - name: Import PostgreSQL GPG Key (Red Hat Family)
+      rpm_key:
+        key: "https://download.postgresql.org/pub/repos/yum/RPM-GPG-KEY-PGDG-{{ ansible_distribution_major_version }}"
+        state: present
+      when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+    - name: Add PostgreSQL Yum Repository (Red Hat Family)
+      yum_repository:
+        name: PostgreSQL
+        description: PostgreSQL Yum Repository
+        baseurl: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{ ansible_distribution_major_version }}-{{ ansible_architecture }}/pgdg-redhat-repo-latest.noarch.rpm"
+        enabled: yes
+      when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+    - name: Update Package Lists (Ubuntu)
+      apt:
+        update_cache: yes
+      when: distribution.stdout == 'focal'
+
+    - name: Update Package Lists (Red Hat Family)
+      yum:
+        update_cache: yes
+      when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+    - name: Install PostgreSQL (Latest Version - Ubuntu)
+      apt:
+        name: postgresql
+        state: present
+      when: distribution.stdout == 'focal' and postgres_version == 'latest'
+
+    - name: Install PostgreSQL (Specific Version - Ubuntu) 
+      apt:
+        name: "postgresql-{{ postgres_version }}"
+        state: present
+      when: distribution.stdout == 'focal' and postgres_version != 'latest'
+
+    - name: Install PostgreSQL (Latest Version - Red Hat Family
+      package:
+        name: postgresql
+        state: present
+      when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle'] and postgres_version == 'latest'
+
+    - name: Install PostgreSQL (Specific Version - Red Hat Family)
+      package:
+        name: "postgresql{{ postgres_version }}"
+        state: present
+      when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle'] and postgres_version != 'latest'
+
+    - name: Set PostgreSQL user password (Ubuntu)
+      shell: "sudo -u postgres psql -c \"ALTER USER {{ postgres_user }} PASSWORD '{{ postgres_password }}';\""
+      when: distribution.stdout == 'focal'
+
+    - name: Set PostgreSQL user password (Red Hat Family)
+      shell: "sudo -u postgres psql -c \"ALTER USER {{ postgres_user }} PASSWORD '{{ postgres_password }}';\""
+      when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+    - name: Ensure PostgreSQL service is running (Ubuntu)
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+      when: distribution.stdout == 'focal'
+
+
+    - name: Ensure PostgreSQL service is running (Red Hat Family)
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+      when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+    
+    - name: Create PostgreSQL Database
+      shell: "sudo -u postgres createdb {{ db_name }}"
+      when: distribution.stdout in ['focal', 'centos', 'fedora', 'rhel', 'rocky', 'oracle']
+      ignore_errors: true
+
+    - name: Create PostgreSQL User (Ubuntu)
+      shell: "sudo -u postgres createuser -d -l -r -s {{ db_user }}"
+      when: distribution.stdout == 'focal'
+
+    # - name: Configuration Database 
+    #   template:
+    #     src: templates/pg_hba.j2
+    #     dest: /etc/postgresql/{{ postgres_version }}/main/pg_hba.conf
+    #   when: distribution.stdout == 'focal'
+
+    - name: Change listen_addresses in postgresql.conf
+      lineinfile:
+        path: /etc/postgresql/{{ postgres_version }}/main/postgresql.conf  # Update with the actual path to your postgresql.conf
+        regexp: '^#?listen_addresses = .*'
+        line: "listen_addresses = '*'"
+        state: present
+          
+    - name: Restarting Services
+      systemd:
+        name: postgresql
+        state: restarted
+      when: distribution.stdout == 'focal'
+    # - name: Add postgres_user to sudoers
+    #   copy:
+    #     content: "{{ postgres_user }} ALL=(ALL) NOPASSWD: ALL"
+    #     dest: "/etc/sudoers.d/{{ postgres_user }}"
+    #   become: yes
+    #   when: distribution.stdout in ['focal', 'centos', 'fedora', 'rhel', 'rocky', 'oracle']
+    
+    - name: Provide connection information
+      debug:
+        msg: |
+          Connection Info:
+          Database Name: {{ db_name }}
+          Database User: {{ postgres_user }}
+          Host: {{ db_host }}
+          Port: {{ db_port }}
+          Password: {{ postgres_password }}
+      register: connection_info
+
+
+    - name: Provide Quick Connect details
+      debug:
+        msg: |
+          CONNECTION STRING: psql "postgres://{{ postgres_user }}:Your_Password@{{ db_host }}:{{ db_port }}/{{ db_name }}"
+      register: quick_connect_info
+
+    - name: Create directory for storing info.txt
+      file:
+        path: /root/
+        state: directory
+
+    - name: Ensure info.txt file exists
+      file:
+        path: info.txt  # Replace with the desired path
+        state: touch
+      delegate_to: localhost
+
+    - name: Append to info.txt
+      lineinfile:
+        path: info.txt  # Replace with the desired path
+        line: "{{ (connection_info.msg + ', ' + quick_connect_info.msg) | replace('\n', '\n  ') }}"
+      delegate_to: localhost
+# ---
+# - name: Install and Configure PostgreSQL
+#   hosts: all
+#   become: yes
+#   gather_facts: no
+
+#   vars:
+#     postgres_user: "{{ user | default('postgres') }}"
+#     postgres_password: "{{ password | default('password') }}"
+#     postgres_version: "{{ version | default('latest') }}"
+#     db_name: "{{ dbname | default('mydb') }}"
+#     db_user: "{{ dbuser | default('dbuser') }}"
+#     db_user_password: "{{ dbpassword | default('dbpassword') }}"
+#     db_host: "{{ dbhost | default('localhost') }}"
+#     db_port: "{{ dbport | default('5432') }}"
+
+#   tasks:
+#     - name: Detect Linux Distribution
+#       shell: lsb_release -cs
+#       register: distribution
+#       changed_when: false
+#       check_mode: no
+
+#     - name: Import PostgreSQL GPG Key (Ubuntu)
+#       apt_key:
+#         url: "https://www.postgresql.org/media/keys/ACCC4CF8.asc"
+#         state: present
+#       when: distribution.stdout == 'focal'
+
+#     - name: Add PostgreSQL Apt Repository (Ubuntu)
+#       apt_repository:
+#         repo: 'deb https://apt.postgresql.org/pub/repos/apt {{ distribution.stdout }}-pgdg main'
+#         state: present
+#       when: distribution.stdout == 'focal'
+
+#     - name: Import PostgreSQL GPG Key (Red Hat Family)
+#       rpm_key:
+#         key: "https://download.postgresql.org/pub/repos/yum/RPM-GPG-KEY-PGDG-{{ ansible_distribution_major_version }}"
+#         state: present
+#       when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+#     - name: Add PostgreSQL Yum Repository (Red Hat Family)
+#       yum_repository:
+#         name: PostgreSQL
+#         description: PostgreSQL Yum Repository
+#         baseurl: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{ ansible_distribution_major_version }}-{{ ansible_architecture }}/pgdg-redhat-repo-latest.noarch.rpm"
+#         enabled: yes
+#       when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+#     - name: Update Package Lists (Ubuntu)
+#       apt:
+#         update_cache: yes
+#       when: distribution.stdout == 'focal'
+
+#     - name: Update Package Lists (Red Hat Family)
+#       yum:
+#         update_cache: yes
+#       when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+#     - name: Install PostgreSQL (Latest Version - Ubuntu)
+#       apt:
+#         name: postgresql
+#         state: present
+#       when: distribution.stdout == 'focal' and postgres_version == 'latest'
+
+#     - name: Install PostgreSQL (Specific Version - Ubuntu
+#       apt:
+#         name: "postgresql-{{ postgres_version }}"
+#         state: present
+#       when: distribution.stdout == 'focal' and postgres_version != 'latest'
+
+#     - name: Install PostgreSQL (Latest Version - Red Hat Family
+#       package:
+#         name: postgresql
+#         state: present
+#       when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle'] and postgres_version == 'latest'
+
+#     - name: Install PostgreSQL (Specific Version - Red Hat Family)
+#       package:
+#         name: "postgresql{{ postgres_version }}"
+#         state: present
+#       when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle'] and postgres_version != 'latest'
+
+#     - name: Set PostgreSQL user password (Ubuntu)
+#       shell: "sudo -u postgres psql -c \"ALTER USER {{ postgres_user }} PASSWORD '{{ postgres_password }}';\""
+#       when: distribution.stdout == 'focal'
+
+#     - name: Set PostgreSQL user password (Red Hat Family)
+#       shell: "sudo -u postgres psql -c \"ALTER USER {{ postgres_user }} PASSWORD '{{ postgres_password }}';\""
+#       when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+#     - name: Ensure PostgreSQL service is running (Ubuntu)
+#       service:
+#         name: postgresql
+#         state: started
+#         enabled: yes
+#       when: distribution.stdout == 'focal'
+
+
+#     - name: Ensure PostgreSQL service is running (Red Hat Family)
+#       service:
+#         name: postgresq
+#         state: started
+#         enabled: yes
+#       when: distribution.stdout in ['centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+#     # - name: Add postgres_user to sudoers
+#     #   copy:
+#     #     content: "{{ postgres_user }} ALL=(ALL) NOPASSWD: ALL"
+#     #     dest: "/etc/sudoers.d/{{ postgres_user }}"
+#     #   become: yes
+#     #   when: distribution.stdout in ['focal', 'centos', 'fedora', 'rhel', 'rocky', 'oracle']
+
+#     - name: Create PostgreSQL Database
+#       shell: "sudo -u postgres createdb {{ db_name }}"
+#       when: distribution.stdout in ['focal', 'centos', 'fedora', 'rhel', 'rocky', 'oracle']
+#       ignore_errors: true
+
+#     - name: Create PostgreSQL User (Ubuntu)
+#       shell: "sudo -u postgres createuser -d -l -r -s {{ db_user }}"       
+#       when: distribution.stdout == 'focal'
+
+#     - name: Provide connection information
+#       debug:
+#         msg: |
+#           PostgreSQL is installed and configured.
+#           Connection Info:
+#           Database Name: {{ db_name }}
+#           Database User: {{ db_user }}
+#           Host: {{ db_host }}
+#           Port: {{ db_port }}
+#           SSL Mode: require
+#           Password: {{ db_user_password }}
+
+#     - name: Provide Quick Connect details
+#       debug:
+#         msg: |
+#           Quick Connect:
+#           CONNECTION STRING
+#           psql "postgres://{{ db_user }}@{{ db_host }}:{{ db_port }}/{{ db_name }}?sslmode=require"
+   
+#     - name: Provide connection information2
+#       debug:
+#         msg: |
+#           PostgreSQL is installed and configured.
+
+#           Connection Info:
+#           Database Name: {{ db_name }}
+#           Database User: {{ db_user }}
+#           Host: {{ db_host }}
+#           Port: {{ db_port }}
+#           SSL Mode: require
+#           Password: {{ db_user_password }}
+
+
+#     - name: Provide Quick Connect details2
+#       debug:
+#         msg: |
+#           Quick Connect:
+#           CONNECTION STRING
+#           psql "postgres://{{ db_user }}@{{ db_host }}:{{ db_port }}/{{ db_name }}?sslmode=require"
